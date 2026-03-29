@@ -1,41 +1,136 @@
 trigger:
   branches:
     include:
+      - main
       - dev
       - uat
-      - main
 
 variables:
-- group: azure-secrets
+- ${{ if eq(variables['Build.SourceBranchName'], 'dev') }}:
+  - group: azure-secrets-dev
+- ${{ if eq(variables['Build.SourceBranchName'], 'uat') }}:
+  - group: azure-secrets-uat
+- ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
+  - group: azure-secrets-prod # Link the library group here
 
 stages:
-- stage: Deploy
+
+# =========================
+# Stage 1: Dev Deployment
+# =========================
+- stage: Dev
+  displayName: "Deploy to Dev"
+  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'dev'))
   jobs:
-  - deployment: DeployEnvironment
-    environment: $(Build.SourceBranchName)
-    strategy:
-      runOnce:
-        deploy:
-          steps:
-          - task: TerraformInstaller@0
-            inputs:
-              terraformVersion: '1.5.7'
+  - job: Terraform_Apply_Dev
+    displayName: "Terraform Apply - Dev"
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
 
-          - script: |
-              terraform init
-              terraform workspace select $(Build.SourceBranchName) || terraform workspace new $(Build.SourceBranchName)
-              terraform apply -var-file=$(Build.SourceBranchName).tfvars -auto-approve
-            displayName: "Terraform Apply"
+      - task: TerraformInstaller@0
+        inputs:
+          terraformVersion: '1.5.7'
 
-          - task: AzureFunctionApp@1
-            inputs:
-              azureSubscription: $(AZURE_SERVICE_CONNECTION)
-              appType: functionAppLinux
-              appName: "$(Build.SourceBranchName)-ingest-func"
-              package: $(Pipeline.Workspace)/functions/ingest_logs
+      - script: |
+          terraform init
+          terraform workspace select dev || terraform workspace new dev
+          terraform apply -var-file=dev.tfvars -auto-approve
+        displayName: "Terraform Apply"
 
-          - task: PowerBIActions@1
-            inputs:
-              action: 'ImportPBIX'
-              workspaceName: "$(Build.SourceBranchName)"
-              pbixPath: "powerbi/dashboards/$(Build.SourceBranchName)Audit.pbix"
+      - task: AzureCLI@2
+        inputs:
+          azureSubscription: $(AZURE_SUBSCRIPTION_ID)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            func azure functionapp publish dev-ingest-func --python
+        displayName: "Deploy Azure Function"
+
+      - task: PowerBIActions@1
+        inputs:
+          action: 'RefreshDataset'
+          workspaceName: "$(POWERBI_WORKSPACE_DEV)"
+          datasetName: "DevAudit"
+        displayName: "Refresh Power BI Dashboards"
+
+# =========================
+# Stage 2: UAT Deployment
+# =========================
+- stage: UAT
+  displayName: "Deploy to UAT"
+  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'uat'))
+  jobs:
+  - job: Terraform_Apply_UAT
+    displayName: "Terraform Apply - UAT"
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+
+      - task: TerraformInstaller@0
+        inputs:
+          terraformVersion: '1.5.7'
+
+      - script: |
+          terraform init
+          terraform workspace select uat || terraform workspace new uat
+          terraform apply -var-file=uat.tfvars -auto-approve
+        displayName: "Terraform Apply"
+
+      - task: AzureCLI@2
+        inputs:
+          azureSubscription: $(AZURE_SUBSCRIPTION_ID)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            func azure functionapp publish uat-ingest-func --python
+        displayName: "Deploy Azure Function"
+
+      - task: PowerBIActions@1
+        inputs:
+          action: 'RefreshDataset'
+          workspaceName: "$(POWERBI_WORKSPACE_UAT)"
+          datasetName: "UATAudit"
+        displayName: "Refresh Power BI Dashboards"
+
+# =========================
+# Stage 3: Prod Deployment
+# =========================
+- stage: Prod
+  displayName: "Deploy to Prod"
+  condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'main'))
+  jobs:
+  - job: Terraform_Apply_Prod
+    displayName: "Terraform Apply - Prod"
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+
+      - task: TerraformInstaller@0
+        inputs:
+          terraformVersion: '1.5.7'
+
+      - script: |
+          terraform init
+          terraform workspace select prod || terraform workspace new prod
+          terraform apply -var-file=prod.tfvars -auto-approve
+        displayName: "Terraform Apply"
+
+      - task: AzureCLI@2
+        inputs:
+          azureSubscription: $(AZURE_SUBSCRIPTION_ID)
+          scriptType: bash
+          scriptLocation: inlineScript
+          inlineScript: |
+            func azure functionapp publish prod-ingest-func --python
+        displayName: "Deploy Azure Function"
+
+      - task: PowerBIActions@1
+        inputs:
+          action: 'RefreshDataset'
+          workspaceName: "$(POWERBI_WORKSPACE_PROD)"
+          datasetName: "ProdAudit"
+        displayName: "Refresh Power BI Dashboards"
