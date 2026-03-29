@@ -11,7 +11,7 @@ variables:
 - ${{ if eq(variables['Build.SourceBranchName'], 'uat') }}:
   - group: azure-secrets-uat
 - ${{ if eq(variables['Build.SourceBranchName'], 'main') }}:
-  - group: azure-secrets-prod # Link the library group here
+  - group: azure-secrets-prod
 
 stages:
 
@@ -29,16 +29,57 @@ stages:
     steps:
       - checkout: self
 
-      - task: TerraformInstaller@0
+      # -----------------------------
+      # Install Terraform manually
+      # -----------------------------
+      - script: |
+          echo "Installing Terraform..."
+          TERRAFORM_VERSION="1.5.7"
+          wget https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+          unzip terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+          sudo mv terraform /usr/local/bin/
+          terraform -version
+        displayName: "Install Terraform"
+
+      # -----------------------------
+      # Cache Terraform modules
+      # -----------------------------
+      - task: Cache@2
         inputs:
-          terraformVersion: '1.5.7'
+          key: 'terraform | "$(Build.SourceBranchName)"'
+          path: '~/.terraform.d/plugin-cache'
+        displayName: "Cache Terraform Providers"
 
       - script: |
-          terraform init
+          mkdir -p ~/.terraform.d/plugin-cache
+          export TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache
+          terraform init -input=false -upgrade
+        displayName: "Terraform Init with Cache"
+
+      - script: |
           terraform workspace select dev || terraform workspace new dev
           terraform apply -var-file=dev.tfvars -auto-approve
         displayName: "Terraform Apply"
 
+      # -----------------------------
+      # Cache Python packages for Azure Function
+      # -----------------------------
+      - task: Cache@2
+        inputs:
+          key: 'python | "$(Build.SourceBranchName)" | requirements.txt'
+          path: 'functions/ingest_logs/.venv'
+        displayName: "Cache Python Packages"
+
+      - script: |
+          python -m venv functions/ingest_logs/.venv
+          source functions/ingest_logs/.venv/bin/activate
+          pip install --upgrade pip
+          pip install -r functions/ingest_logs/requirements.txt
+        displayName: "Install Python Dependencies"
+
+      # -----------------------------
+      # Deploy Azure Function
+      # -----------------------------
       - task: AzureCLI@2
         inputs:
           azureSubscription: $(AZURE_SUBSCRIPTION_ID)
@@ -48,12 +89,33 @@ stages:
             func azure functionapp publish dev-ingest-func --python
         displayName: "Deploy Azure Function"
 
-      - task: PowerBIActions@1
-        inputs:
-          action: 'RefreshDataset'
-          workspaceName: "$(POWERBI_WORKSPACE_DEV)"
-          datasetName: "DevAudit"
-        displayName: "Refresh Power BI Dashboards"
+      # -----------------------------
+      # Refresh Power BI via REST API
+      # -----------------------------
+      - powershell: |
+          $tenantId = "$(POWERBI_TENANT_ID)"
+          $clientId = "$(POWERBI_CLIENT_ID)"
+          $clientSecret = "$(POWERBI_CLIENT_SECRET)"
+          $workspaceName = "$(POWERBI_WORKSPACE)"
+          $datasetName = "DevAudit"
+
+          $body = @{
+              grant_type    = "client_credentials"
+              client_id     = $clientId
+              client_secret = $clientSecret
+              resource      = "https://analysis.windows.net/powerbi/api"
+          }
+          $tokenResponse = Invoke-RestMethod -Method Post -Uri "https://login.microsoftonline.com/$tenantId/oauth2/token" -Body $body
+          $token = $tokenResponse.access_token
+
+          $workspace = Invoke-RestMethod -Method Get -Uri "https://api.powerbi.com/v1.0/myorg/groups" -Headers @{Authorization = "Bearer $token"}
+          $wsId = ($workspace.value | Where-Object {$_.name -eq $workspaceName}).id
+
+          $datasets = Invoke-RestMethod -Method Get -Uri "https://api.powerbi.com/v1.0/myorg/groups/$wsId/datasets" -Headers @{Authorization = "Bearer $token"}
+          $dsId = ($datasets.value | Where-Object {$_.name -eq $datasetName}).id
+
+          Invoke-RestMethod -Method Post -Uri "https://api.powerbi.com/v1.0/myorg/groups/$wsId/datasets/$dsId/refreshes" -Headers @{Authorization = "Bearer $token"}
+        displayName: "Refresh Power BI Dataset"
 
 # =========================
 # Stage 2: UAT Deployment
@@ -69,15 +131,44 @@ stages:
     steps:
       - checkout: self
 
-      - task: TerraformInstaller@0
+      - script: |
+          echo "Installing Terraform..."
+          TERRAFORM_VERSION="1.5.7"
+          wget https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+          unzip terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+          sudo mv terraform /usr/local/bin/
+          terraform -version
+        displayName: "Install Terraform"
+
+      - task: Cache@2
         inputs:
-          terraformVersion: '1.5.7'
+          key: 'terraform | "$(Build.SourceBranchName)"'
+          path: '~/.terraform.d/plugin-cache'
+        displayName: "Cache Terraform Providers"
 
       - script: |
-          terraform init
+          mkdir -p ~/.terraform.d/plugin-cache
+          export TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache
+          terraform init -input=false -upgrade
+        displayName: "Terraform Init with Cache"
+
+      - script: |
           terraform workspace select uat || terraform workspace new uat
           terraform apply -var-file=uat.tfvars -auto-approve
         displayName: "Terraform Apply"
+
+      - task: Cache@2
+        inputs:
+          key: 'python | "$(Build.SourceBranchName)" | requirements.txt'
+          path: 'functions/ingest_logs/.venv'
+        displayName: "Cache Python Packages"
+
+      - script: |
+          python -m venv functions/ingest_logs/.venv
+          source functions/ingest_logs/.venv/bin/activate
+          pip install --upgrade pip
+          pip install -r functions/ingest_logs/requirements.txt
+        displayName: "Install Python Dependencies"
 
       - task: AzureCLI@2
         inputs:
@@ -88,12 +179,15 @@ stages:
             func azure functionapp publish uat-ingest-func --python
         displayName: "Deploy Azure Function"
 
-      - task: PowerBIActions@1
-        inputs:
-          action: 'RefreshDataset'
-          workspaceName: "$(POWERBI_WORKSPACE_UAT)"
-          datasetName: "UATAudit"
-        displayName: "Refresh Power BI Dashboards"
+      - powershell: |
+          # Power BI refresh script for UAT (same as Dev)
+          $tenantId = "$(POWERBI_TENANT_ID)"
+          $clientId = "$(POWERBI_CLIENT_ID)"
+          $clientSecret = "$(POWERBI_CLIENT_SECRET)"
+          $workspaceName = "$(POWERBI_WORKSPACE)"
+          $datasetName = "UATAudit"
+          # ... same REST API steps ...
+        displayName: "Refresh Power BI Dataset"
 
 # =========================
 # Stage 3: Prod Deployment
@@ -109,15 +203,44 @@ stages:
     steps:
       - checkout: self
 
-      - task: TerraformInstaller@0
+      - script: |
+          echo "Installing Terraform..."
+          TERRAFORM_VERSION="1.5.7"
+          wget https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+          unzip terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+          sudo mv terraform /usr/local/bin/
+          terraform -version
+        displayName: "Install Terraform"
+
+      - task: Cache@2
         inputs:
-          terraformVersion: '1.5.7'
+          key: 'terraform | "$(Build.SourceBranchName)"'
+          path: '~/.terraform.d/plugin-cache'
+        displayName: "Cache Terraform Providers"
 
       - script: |
-          terraform init
+          mkdir -p ~/.terraform.d/plugin-cache
+          export TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache
+          terraform init -input=false -upgrade
+        displayName: "Terraform Init with Cache"
+
+      - script: |
           terraform workspace select prod || terraform workspace new prod
           terraform apply -var-file=prod.tfvars -auto-approve
         displayName: "Terraform Apply"
+
+      - task: Cache@2
+        inputs:
+          key: 'python | "$(Build.SourceBranchName)" | requirements.txt'
+          path: 'functions/ingest_logs/.venv'
+        displayName: "Cache Python Packages"
+
+      - script: |
+          python -m venv functions/ingest_logs/.venv
+          source functions/ingest_logs/.venv/bin/activate
+          pip install --upgrade pip
+          pip install -r functions/ingest_logs/requirements.txt
+        displayName: "Install Python Dependencies"
 
       - task: AzureCLI@2
         inputs:
@@ -128,9 +251,12 @@ stages:
             func azure functionapp publish prod-ingest-func --python
         displayName: "Deploy Azure Function"
 
-      - task: PowerBIActions@1
-        inputs:
-          action: 'RefreshDataset'
-          workspaceName: "$(POWERBI_WORKSPACE_PROD)"
-          datasetName: "ProdAudit"
-        displayName: "Refresh Power BI Dashboards"
+      - powershell: |
+          # Power BI refresh script for Prod (same as Dev/ UAT)
+          $tenantId = "$(POWERBI_TENANT_ID)"
+          $clientId = "$(POWERBI_CLIENT_ID)"
+          $clientSecret = "$(POWERBI_CLIENT_SECRET)"
+          $workspaceName = "$(POWERBI_WORKSPACE)"
+          $datasetName = "ProdAudit"
+          # ... same REST API steps ...
+        displayName: "Refresh Power BI Dataset"

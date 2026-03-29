@@ -58,3 +58,20 @@ This repository contains a production-ready setup to ingest Domino lab audit log
 ./scripts/deploy.sh dev
 ./scripts/deploy.sh uat
 ./scripts/deploy.sh prod
+
+| Name                    | Value / Description                               | Secret? |
+| ----------------------- | ------------------------------------------------- | ------- |
+| `AZURE_SUBSCRIPTION_ID` | `<your-subscription-id>`                          | ✅       |
+| `AZURE_TENANT_ID`       | `<your-tenant-id>`                                | ✅       |
+| `AZURE_CLIENT_ID`       | `<service-principal-client-id>`                   | ✅       |
+| `AZURE_CLIENT_SECRET`   | `<service-principal-client-secret>`               | ✅       |
+| `AZURE_RESOURCE_GROUP`  | `domino-logs-dev-rg`                              | ❌       |
+| `AZURE_LOCATION`        | `eastus`                                          | ❌       |
+| `STORAGE_ACCOUNT_KEY`   | `<dev-storage-account-key>`                       | ✅       |
+| `APP_SERVICE_PLAN_ID`   | `<dev-app-service-plan-id>`                       | ❌       |
+| `ADX_CLUSTER_URL`       | `https://dev-adxcluster.eastus.kusto.windows.net` | ❌       |
+| `ADX_DB_NAME`           | `dev_auditlogs`                                   | ❌       |
+| `POWERBI_CLIENT_ID`     | `<powerbi-sp-client-id>`                          | ✅       |
+| `POWERBI_CLIENT_SECRET` | `<powerbi-sp-client-secret>`                      | ✅       |
+| `POWERBI_TENANT_ID`     | `<powerbi-tenant-id>`                             | ✅       |
+| `POWERBI_WORKSPACE`     | `Dev`                                             | ❌       |
