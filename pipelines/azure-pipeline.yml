@@ -1,0 +1,41 @@
+trigger:
+  branches:
+    include:
+      - dev
+      - uat
+      - main
+
+variables:
+- group: azure-secrets
+
+stages:
+- stage: Deploy
+  jobs:
+  - deployment: DeployEnvironment
+    environment: $(Build.SourceBranchName)
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: '1.5.7'
+
+          - script: |
+              terraform init
+              terraform workspace select $(Build.SourceBranchName) || terraform workspace new $(Build.SourceBranchName)
+              terraform apply -var-file=$(Build.SourceBranchName).tfvars -auto-approve
+            displayName: "Terraform Apply"
+
+          - task: AzureFunctionApp@1
+            inputs:
+              azureSubscription: $(AZURE_SERVICE_CONNECTION)
+              appType: functionAppLinux
+              appName: "$(Build.SourceBranchName)-ingest-func"
+              package: $(Pipeline.Workspace)/functions/ingest_logs
+
+          - task: PowerBIActions@1
+            inputs:
+              action: 'ImportPBIX'
+              workspaceName: "$(Build.SourceBranchName)"
+              pbixPath: "powerbi/dashboards/$(Build.SourceBranchName)Audit.pbix"
